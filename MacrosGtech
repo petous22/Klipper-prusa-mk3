@@ -1,0 +1,489 @@
+#[gcode_macro T1]
+#description: Select extruder 1
+#gcode:
+#  ACTIVATE_EXTRUDER extruder=extruder1
+#  SAVE_VARIABLE VARIABLE=currentextruder VALUE='"extruder1"'
+
+#[gcode_macro T0]
+#description: Select extruder 2
+#gcode:
+#  ACTIVATE_EXTRUDER extruder=extruder
+#  SAVE_VARIABLE VARIABLE=currentextruder VALUE='"extruder"'
+
+[gcode_macro BED_MESH_CALIBRATE]
+rename_existing: BED_MESH_CALIBRATE_BASE
+; gcode parameters
+variable_parameter_AREA_START : 0,0
+variable_parameter_AREA_END : 0,0
+; the clearance between print area and probe area 
+variable_mesh_area_offset : 5.0
+; number of sample per probe point
+variable_probe_samples : 2
+; minimum probe count
+variable_min_probe_count : 3
+; scale up the probe count, should be 1.0 ~ < variable_max_probe_count/variable_min_probe_count
+variable_probe_count_scale_factor : 1.0
+gcode:
+    {% if params.AREA_START and params.AREA_END %}
+        {% set bedMeshConfig = printer["configfile"].config["bed_mesh"] %}
+        {% set safe_min_x = bedMeshConfig.mesh_min.split(",")[0]|float %}
+        {% set safe_min_y = bedMeshConfig.mesh_min.split(",")[1]|float %}
+        {% set safe_max_x = bedMeshConfig.mesh_max.split(",")[0]|float %}
+        {% set safe_max_y = bedMeshConfig.mesh_max.split(",")[1]|float %}
+
+        {% set area_min_x = params.AREA_START.split(",")[0]|float %}
+	{% set area_min_y = params.AREA_START.split(",")[1]|float %}
+	{% set area_max_x = params.AREA_END.split(",")[0]|float %}
+	{% set area_max_y = params.AREA_END.split(",")[1]|float %}
+
+	{% if bedMeshConfig.probe_count.split(",")|length == 2 %}
+            {% set meshPointX = bedMeshConfig.probe_count.split(",")[0]|int %}
+            {% set meshPointY = bedMeshConfig.probe_count.split(",")[1]|int %}
+        {% else %}
+            {% set meshPointX = bedMeshConfig.probe_count.split(",")[0]|int %}
+            {% set meshPointY = bedMeshConfig.probe_count.split(",")[0]|int %}
+        {% endif %}
+
+	{% set meshMaxPointX = meshPointX %}
+	{% set meshMaxPointY = meshPointY %}
+
+
+        {% if (area_min_x < area_max_x) and (area_min_y < area_max_y) %}
+            {% if area_min_x - mesh_area_offset >=  safe_min_x %}
+                {% set area_min_x = area_min_x - mesh_area_offset %}
+            {% else %}
+                {% set area_min_x = safe_min_x %}
+            {% endif %}
+
+            {% if area_min_y - mesh_area_offset >=  safe_min_y %}
+                {% set area_min_y = area_min_y - mesh_area_offset %}
+            {% else %}
+                {% set area_min_y = safe_min_y %}
+            {% endif %}
+
+            {% if area_max_x + mesh_area_offset <=  safe_max_x %}
+                {% set area_max_x = area_max_x + mesh_area_offset %}
+            {% else %}
+                {% set area_max_x = safe_max_x %}
+            {% endif %}
+
+            {% if area_max_y + mesh_area_offset <=  safe_max_y %}
+                {% set area_max_y = area_max_y + mesh_area_offset %}
+            {% else %}
+                {% set area_max_y = safe_max_y %}
+            {% endif %}
+
+            {% set meshPointX = (meshPointX * (area_max_x - area_min_x) / (safe_max_x - safe_min_x) * probe_count_scale_factor)|round(0)|int %}
+            {% if meshPointX < min_probe_count %}
+                {% set meshPointX = min_probe_count %}
+            {% endif %}
+	    {% if meshPointX > meshMaxPointX %}
+                {% set meshPointX = meshMaxPointX %}
+            {% endif %}
+
+            {% set meshPointY = (meshPointY * (area_max_y -area_min_y ) / (safe_max_y - safe_min_y) * probe_count_scale_factor )|round(0)|int %}
+            {% if meshPointY < min_probe_count %}
+                {% set meshPointY = min_probe_count %}
+            {% endif %}
+	    {% if meshPointY > meshMaxPointY %}
+                {% set meshPointY = meshMaxPointY %}
+            {% endif %}
+
+            BED_MESH_CALIBRATE_BASE mesh_min={area_min_x},{area_min_y} mesh_max={area_max_x},{area_max_y} probe_count={meshPointX},{meshPointY} samples={probe_samples|int}
+        {% else %}
+            BED_MESH_CALIBRATE_BASE
+        {% endif %}
+    {% else %}
+        BED_MESH_CALIBRATE_BASE
+    {% endif %}
+
+
+[gcode_macro M0]
+description: Stop printing
+gcode:
+    {% set X = params.X|default(-0.1)|float %}
+    {% set Y = params.Y|default(205)|float %}
+    {% set Z = params.Z|default(10)|float %}
+    SAVE_GCODE_STATE NAME=M0_state
+    PAUSE
+    G91 # use relative coordinates
+    G1 E-2 F3000
+    G1 Z{Z}
+    G90 # use absolute coordinates
+    G1 X{X} Y{Y} F3000
+    G91
+    G1 E50 F1000
+    RESTORE_GCODE_STATE NAME=M0_state
+
+[gcode_macro M486]
+gcode:
+    CLEAR_PAUSE
+
+    
+[gcode_macro START_PRINT]
+description: Start printing
+; gcode parameters for area bed mesh
+variable_parameter_AREA_START : 0,0
+variable_parameter_AREA_END : 0,0
+gcode:
+    {% set EXTRUDER = params.EXTRUDER|default(210)|float %}
+    {% set BED = params.BED|default(60)|float %}
+    ; gcode parameters for area bed mesh
+
+    #{% set CHAMBER = params.CHAMBER|default(30)|float %}
+    #BLTOUCH_DEBUG COMMAND=reset
+    G90 # use absolute coordinates
+    M83 # extruder relative mode
+    M104 S180 # temporary
+    M140 S{BED} # set final bed temp
+    M109 S180 # wait temporary nozzle temp to prevent oozing during homing and auto bed leveling
+    M190 S{BED} # wait for bed temp to stabilize
+    G28 # Home all axes 
+    BED_MESH_CALIBRATE AREA_START={params.AREA_START|default("0,0")} AREA_END={params.AREA_END|default("0,0")}
+    ;BED_MESH_PROFILE LOAD=default 
+    G1 Z20 F240
+    M106 S80 ;cool
+    M109 S{EXTRUDER} # wait for nozzle temp to stabilize 
+    G1 X0 Y150 F5000
+    G1 Z1 F1800  
+    M106 S0 ;off cool
+    G92 E0 # Reset Extruder
+    G1 E5 F2000 ; AntiRetract
+    G1 X0 Y0 Z0.3 F2000 # Move to start position
+    G1 X-0.5 Y0 Z-0.3 F2000 # Move to start position
+    G1 X0.2 F1800 
+    G4 P50 #wait 0.25s
+    G1 Z0.1 F1800 
+    G1 X200 Y0 Z0.35 F840 E20 #; Draw the first line
+    G1 X200 Y2.8 Z0.2 F2000  #;  line
+    #G1 X20 Y1.8 Z0.28 F850 E15 #; Draw the sec line
+    G92 E0 # Reset Extruder
+    G10 ; Retract filament 
+    G1 Z0.28 F2400 # Move Z Axis up little to prevent scratching of Heat Bed
+    #M221 S95
+
+# ================================================================================
+# GCode Macro: END_PRINT
+# Add END_PRINT in your slicers ending script
+# ================================================================================
+[gcode_macro END_PRINT]
+description: Stop printing
+gcode:
+    G10 ; retract
+    G10 ; retract
+    G91 ; Relative Positioning
+    #G1 Z+20 ; Move Z up so it doesn't hit anything
+    M106 S255 ;cool
+    G1 E-5 F2800 ; Retract-5
+    G1 Z+20 ; Move Z up so it doesn't hit anything
+    G4
+    #G1 E-8 F1200 ; Retract-8
+    G90 ; Absolute Positioning
+    G1 X0 Y215 F3000 ; Move to front
+    M104 S0 ; Turn off Extrude (set it to 0)
+    M140 S0 ; Turn off Bed (set it to 0)
+    M84 ; Disable steppers
+    G4 P9000 ;wait 9s
+    M106 S0 ; turn off cooling fan
+# ================================================================================
+[gcode_macro G29]
+description: Bed leveling
+gcode:
+  {% set t = params.T|default(0)|float %}
+  {% if printer.idle_timeout.state == "Printing" %}
+    {action_respond_info("This command cannot be used while printing")}
+  {% elif printer.toolhead.homed_axes != "xyz" %}
+    {action_respond_info("Please home XYZ first")}
+  {% else %}
+    BLTOUCH_DEBUG COMMAND=reset
+    SAVE_GCODE_STATE NAME=G29_state
+    G90
+    G1 Z10 F240
+    {% if t > 30.0 %}
+      M190 S{t}
+    {% endif %}
+    BED_MESH_CALIBRATE
+    {% if 'S' in params %}
+      M140 S{params.S}
+    {% endif %}
+    G90
+    G1 Z15 F240
+    G1 X115 Y115 F6000
+    RESTORE_GCODE_STATE NAME=G29_state MOVE=0
+  {% endif %}
+
+[output_pin BEEPER_pin]
+pin: PD3
+pwm: True
+value: 0
+shutdown_value: 0
+cycle_time: 0.001
+scale: 1000
+
+# M300 : Play tone, Beeper support, as commonly found on usual LCD displays
+# Usage: M300 [P<ms>] [S<Hz>]      P is the tone duration, S the tone frequency.
+[gcode_macro M300]
+description: Play tone
+gcode:
+# Use a default 1kHz tone if S is omitted.
+    {% set S = params.S|default(1000)|int %}
+    # Use a 10ms duration is P is omitted.
+    {% set P = params.P|default(100)|int %}
+    SET_PIN PIN=BEEPER_pin VALUE=0.5 CYCLE_TIME={ 1.0/S if S > 0 else 1 }
+    G4 P{P}
+    SET_PIN PIN=BEEPER_pin VALUE=0
+
+[gcode_macro M701]
+description: Load filament
+gcode:
+    LOAD_FILAMENT
+[gcode_macro M702]
+description: Unload filament
+gcode:
+    UNLOAD_FILAMENT
+[gcode_macro M125]
+description: Park
+gcode:
+    PARK
+
+[gcode_macro M204]
+rename_existing: M204.1
+#default_parameter_F: 0.75
+gcode:
+    {% set S = params.S|default(1000)|float %}
+    {% set F = params.F|default(0.75)|float %}
+    {% if 'S' in params %}
+        SET_VELOCITY_LIMIT ACCEL={S} ACCEL_TO_DECEL={S|float * F|float}
+    {% endif %}
+
+#[gcode_macro M205]
+#gcode:
+#    {% if 'X' in params %}
+#        SET_VELOCITY_LIMIT SQUARE_CORNER_VELOCITY={X}
+#    {% endif %}
+# 'Marlin' style M808 compatibility macro for SDCard looping
+[gcode_macro M808]
+description: SD card looping
+gcode:
+    {% if params.K is not defined and params.L is defined %}SDCARD_LOOP_BEGIN COUNT={params.L|int}{% endif %}
+    {% if params.K is not defined and params.L is not defined %}SDCARD_LOOP_END{% endif %}
+    {% if params.K is defined and params.L is not defined %}SDCARD_LOOP_DESIST{% endif %}
+
+[gcode_macro G80]
+description: Bed mesh calibrate
+gcode:
+# G28 #Avoid double homing if using PrusaSlicer or other default gcode.
+ BED_MESH_CALIBRATE
+ G1 X0 Y0 Z0.4 F4000
+ M117
+ M400
+
+[gcode_macro G81]
+description: Bed mesh output
+gcode:
+ BED_MESH_OUTPUT
+
+[delayed_gcode clear_display]
+initial_duration: 0.
+gcode:
+  M117
+
+# Color Change
+[gcode_macro M600]
+description: Color change
+gcode:
+  PAUSE
+  UNLOAD_FILAMENT
+  M117 Please load new filament and resume
+#Load and Unload Macros.
+[gcode_macro UNLOAD_FILAMENT]
+description: Unload
+gcode:
+  SAVE_GCODE_STATE NAME=unload_state
+  G91
+  {% if params.TEMP is defined or printer.extruder.can_extrude|lower == 'false' %}
+    M117 Heating...
+    # Heat up hotend to provided temp or 220 as default as that should work OK with most filaments.
+    M109 S{params.TEMP|default(220, true)}
+  {% endif %}
+  M117 Unloading filament...
+  M300
+  G92 E0.0
+  G91
+  G1 E-90 F5000
+  G4
+  G1 E-17 F1000
+  G1 E-25 F1000
+  G90
+  G92 E0.0
+  M400
+  M117 Remove Filament Now!
+  M300 S300 P1000
+  M117 Filament unloaded!
+  RESTORE_GCODE_STATE NAME=unload_state
+  UPDATE_DELAYED_GCODE ID=clear_display DURATION=5
+
+[gcode_macro LOAD_FILAMENT]
+description: Load
+gcode:
+  SAVE_GCODE_STATE NAME=load_state
+  G91
+  # Heat up hotend to provided temp or 220 as default as that should work OK with most filaments.
+  {% if params.TEMP is defined or printer.extruder.can_extrude|lower == 'false' %}
+  M117 Heating...
+  M109 S{params.TEMP|default(220, true)}
+  {% endif %}
+  M117 Loading filament...
+  M300
+  # Load the filament into the hotend area.
+  G92 E0.0
+  G91
+  G1 E60 F300
+  M400
+  G1 E50 F100
+  G90
+  G92 E0.0
+  M400
+  M117 Filament loaded!
+  RESTORE_GCODE_STATE NAME=load_state
+  UPDATE_DELAYED_GCODE ID=clear_display DURATION=5
+
+[gcode_macro CANCEL_PRINT]
+description: Cancel the actual running print
+rename_existing: CANCEL_PRINT_BASE
+variable_park: True
+gcode:
+  ## Move head and retract only if not already in the pause state and park set to true
+  {% if printer.pause_resume.is_paused|lower == 'false' and park|lower == 'true'%}
+    _TOOLHEAD_PARK_PAUSE_CANCEL
+  {% endif %}
+  TURN_OFF_HEATERS
+  CANCEL_PRINT_BASE
+  SDCARD_RESET_FILE
+  # Raise nozzle by 60mm
+  G1 Z60 F3000
+  G90
+  # Disable steppers
+  M84
+  
+[gcode_macro RESET]
+description: Reset to defautl state (soft reset)
+gcode:
+  CANCEL_PRINT
+  M300
+
+[gcode_macro PAUSE]
+description: Pause the actual running print
+rename_existing: PAUSE_BASE
+gcode:
+  PAUSE_BASE
+  _TOOLHEAD_PARK_PAUSE_CANCEL
+
+[gcode_macro RESUME]
+description: Resume the actual running print
+rename_existing: RESUME_BASE
+gcode:
+  ##### read extrude from  _TOOLHEAD_PARK_PAUSE_CANCEL  macro #####
+  {% set extrude = printer['gcode_macro _TOOLHEAD_PARK_PAUSE_CANCEL'].extrude %}
+  #### get VELOCITY parameter if specified ####
+  {% if 'VELOCITY' in params|upper %}
+    {% set get_params = ('VELOCITY=' + params.VELOCITY)  %}
+  {%else %}
+    {% set get_params = "" %}
+  {% endif %}
+  ##### end of definitions #####
+  {% if printer.extruder.can_extrude|lower == 'true' %}
+    M83
+    G1 E{extrude} F2100
+    {% if printer.gcode_move.absolute_extrude |lower == 'true' %} M82 {% endif %}
+  {% else %}
+    {action_respond_info("Extruder not hot enough")}
+  {% endif %}  
+  RESUME_BASE {get_params}
+
+[gcode_macro _TOOLHEAD_PARK_PAUSE_CANCEL]
+description: Helper: park toolhead used in PAUSE and CANCEL_PRINT
+variable_extrude: 1.0
+gcode:
+  ##### set park positon for x and y #####
+  # default is your max posion from your printer.cfg
+  {% set x_park = printer.toolhead.axis_maximum.x|float - 5.0 %}
+  {% set y_park = 5.0 %}
+  {% set z_park_delta = 2.0 %}
+  ##### calculate save lift position #####
+  {% set max_z = printer.toolhead.axis_maximum.z|float %}
+  {% set act_z = printer.toolhead.position.z|float %}
+  {% if act_z < (max_z - z_park_delta) %}
+    {% set z_safe = z_park_delta %}
+  {% else %}
+    {% set z_safe = max_z - act_z %}
+  {% endif %}
+  ##### end of definitions #####
+  {% if printer.extruder.can_extrude|lower == 'true' %}
+    M83
+    G1 E-{extrude} F2100
+    {% if printer.gcode_move.absolute_extrude |lower == 'true' %} M82 {% endif %}
+  {% else %}
+    {action_respond_info("Extruder not hot enough")}
+  {% endif %}
+  {% if "xyz" in printer.toolhead.homed_axes %}
+    G91
+    G1 Z{z_safe} F900
+    G90
+    G1 X{x_park} Y{y_park} F6000
+    {% if printer.gcode_move.absolute_coordinates|lower == 'false' %} G91 {% endif %}
+  {% else %}
+    {action_respond_info("Printer not homed")}
+  {% endif %}
+[delayed_gcode welcome]
+initial_duration: 5
+gcode:
+  M117 Welcome!
+  M118 Welcome!
+  UPDATE_DELAYED_GCODE ID=clear_display DURATION=10
+[gcode_macro BLTOUCH_RESET]
+description: Reset PROBE
+gcode:
+    BLTOUCH_DEBUG COMMAND=reset  
+[gcode_macro PREHEAT_LOAD]
+description: Preheat 220
+gcode:
+      m104 S220
+[gcode_macro PREHEAT_LOAD2]
+description: Preheat 240
+gcode:
+      m104 S240
+[gcode_macro COOL_LOAD]
+description: Cool
+gcode:
+       m104 S0
+[gcode_macro M206]
+description: Set -Z offset
+gcode:
+      SET_GCODE_OFFSET Z=-{params.Z}
+[menu __main __filament __preheat]
+type: command
+name: Preheat 220C
+gcode:
+      PREHEAT_LOAD
+[menu __main __filament __preheat2]
+type: command
+name: Preheat 240C
+gcode:
+      PREHEAT_LOAD2
+[menu __main __filament __cool]
+type: command
+name: Cool load ...
+gcode:
+      COOL_LOAD
+[menu __main__filament __load]
+type: command
+name: Load
+gcode:
+      LOAD_FILAMENT
+[menu __main__filament __unload]
+type: command
+name: Unload
+gcode:
+      UNLOAD_FILAMENT
+
